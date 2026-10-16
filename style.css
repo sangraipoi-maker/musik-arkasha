@@ -130,6 +130,7 @@ input{font:inherit;color:inherit}
 }
 .src-badge.archive{color:#0d1f1d;background:var(--teal);border-color:transparent}
 .src-badge.youtube{color:#fff;background:#e52d27;border-color:transparent}
+.src-badge.embed{box-shadow:inset 0 0 0 2px #ffd9a8,0 0 0 1px rgba(255,217,168,.35)}
 
 .seekrow{display:flex;align-items:center;gap:11px;margin-top:8px}
 .time{font:12.5px ui-monospace,Menlo,Consolas,monospace;color:var(--dim);min-width:38px;text-align:center}

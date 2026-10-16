@@ -1,7 +1,8 @@
 /* ============================================================
    Musik Arkasha — pemutar musik pribadi
-   Sumber: Internet Archive (streaming penuh) + YouTube (embed
-   resmi, pencarian via Piped). Semua data pengguna lokal.
+   Sumber: Internet Archive (streaming penuh) + YouTube (aliran
+   audio via Piped; embed resmi hanya fallback per trek bila
+   semua instance gagal). Semua data pengguna lokal.
    ============================================================ */
 'use strict';
 
@@ -36,12 +37,18 @@ const S = {
   playlists: store.get('playlists', []),   // [{name, items:[...]}]
   history: store.get('history', []),
   pipedBase: null,
+  playMode: null,        // audio | audio-direct | embed | resolving
   tab: 'results',
 };
 const isFav = it => S.favs.some(f => keyOf(f) === keyOf(it));
 
 /* ---------------- elemen ---------------- */
-const audio = $('#audio');
+/* Elemen utama terhubung ke Web Audio/analyser. Elemen direct hanya
+   dipakai bila CORS aliran menolak tap analyser: musik tidak boleh
+   ikut gagal hanya karena visualizer tidak bisa membaca audionya. */
+const audioMain = $('#audio');
+const audioDirect = $('#audioDirect');
+let audio = audioMain;
 const els = {
   status: $('#status'), resultsList: $('#resultsList'), resultsMeta: $('#resultsMeta'),
   queueList: $('#queueList'), queueCount: $('#queueCount'),
@@ -55,6 +62,23 @@ const els = {
 function setStatus(msg, isErr=false){
   els.status.textContent = msg || '';
   els.status.classList.toggle('err', !!isErr);
+}
+const audioBacked = () => S.playMode === 'audio' || S.playMode === 'audio-direct';
+const audioTapActive = () => S.playMode === 'audio' && !!analyser;
+function selectAudio(kind){
+  const target = kind === 'direct' ? audioDirect : audioMain;
+  if (audio !== target) {
+    try { audio.pause(); } catch {}
+    audio = target;
+  }
+  audio.volume = Number($('#vol').value || 80) / 100;
+  return audio;
+}
+function pauseAllAudio(){
+  [audioMain, audioDirect].forEach(el => { try { el.pause(); } catch {} });
+}
+function hostLabel(url){
+  try { return new URL(url).host; } catch { return url; }
 }
 
 /* ============================================================
@@ -124,7 +148,8 @@ function iaResolve(item){
 }
 
 /* ============================================================
-   SUMBER 2 — YouTube via Piped (embed resmi untuk putar)
+   SUMBER 2 — YouTube via Piped (aliran audio untuk putar;
+   embed resmi hanya fallback bila semua instance gagal)
    ============================================================ */
 const PIPED_INSTANCES = [
   'https://pipedapi.ducks.party',       // terverifikasi Kav dari VM, 17 Okt 2026
@@ -135,22 +160,68 @@ const PIPED_INSTANCES = [
   'https://pipedapi.leptons.xyz',
   'https://api.piped.private.coffee',
 ];
+function pipedOrder(){
+  const active = S.pipedBase;
+  if (!active) return PIPED_INSTANCES.slice();
+  const i = PIPED_INSTANCES.indexOf(active);
+  if (i < 0) return [active, ...PIPED_INSTANCES];
+  // mulai dari instance aktif, lalu lanjut berputar ke berikutnya
+  return [...PIPED_INSTANCES.slice(i), ...PIPED_INSTANCES.slice(0, i)];
+}
+async function pipedJson(base, path, timeout=7000){
+  const ctl = new AbortController();
+  const to = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const r = await fetch(base + path, { signal: ctl.signal });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d && d.error) throw new Error(String(d.error).split('\n')[0].slice(0, 180));
+    return d;
+  } finally { clearTimeout(to); }
+}
+function markPipedActive(base){
+  S.pipedBase = base;
+  els.pipedStatus.textContent = 'Piped aktif: ' + base.replace('https://','');
+}
 async function pipedFetch(path){
   let lastErr = null;
-  for (const base of PIPED_INSTANCES) {
+  for (const base of pipedOrder()) {
     try {
-      const ctl = new AbortController();
-      const to = setTimeout(() => ctl.abort(), 7000);
-      const r = await fetch((base + path), { signal: ctl.signal });
-      clearTimeout(to);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const d = await r.json();
-      S.pipedBase = base;
-      els.pipedStatus.textContent = 'Piped aktif: ' + base.replace('https://','');
+      const d = await pipedJson(base, path);
+      markPipedActive(base);
       return d;
     } catch (e) { lastErr = e; }
   }
   throw lastErr || new Error('semua instance Piped gagal');
+}
+function pickAudioStream(streams){
+  const cands = (streams || []).filter(s => s && s.url);
+  if (!cands.length) return null;
+  const typeOf = s => `${s.mimeType || ''} ${s.codec || ''} ${s.format || ''}`.toLowerCase();
+  const codecRank = s => {
+    const t = typeOf(s);
+    if (/mp4|m4a|aac/.test(t)) return 4;   // target pertama: m4a/AAC
+    if (/opus/.test(t)) return 3;          // target kedua: Opus
+    if (/webm/.test(t)) return 2;
+    if (/ogg|vorbis/.test(t)) return 1;
+    return 0;
+  };
+  // Bitrate tertinggi yang masih wajar untuk musik: utamakan <=256 kbps;
+  // di atas itu skornya turun perlahan, bukan menang mutlak karena besar.
+  const rateScore = s => {
+    const b = Number(s.bitrate || 0);
+    if (!b) return 0;
+    return b <= 256000 ? b : 256000 - Math.min(128000, (b - 256000) / 8);
+  };
+  return cands.slice().sort((a, b) =>
+    codecRank(b) - codecRank(a) || rateScore(b) - rateScore(a))[0];
+}
+async function pipedStreams(base, videoId){
+  const d = await pipedJson(base, `/streams/${encodeURIComponent(videoId)}`);
+  const raw = pickAudioStream(d.audioStreams);
+  if (!raw) throw new Error('audioStreams kosong');
+  const stream = { ...raw, url: new URL(raw.url, base + '/').href };
+  return { data: d, stream };
 }
 async function ytSearch(q){
   let d = await pipedFetch(`/search?q=${encodeURIComponent(q)}&filter=music_songs`);
@@ -207,7 +278,8 @@ function badgeHTML(it){
     if (it.playable === false) return '<span class="mini-badge pending">Archive · tak ada berkas</span>';
     return '<span class="mini-badge archive">Archive · full</span>';
   }
-  return '<span class="mini-badge youtube">YouTube</span>';
+  return '<span class="mini-badge youtube">YouTube</span>' +
+    (it.embedFallback ? '<span class="mini-badge pending">embed</span>' : '');
 }
 function heartSVG(on){ return `<svg viewBox="0 0 24 24" width="19" height="19" fill="${on?'currentColor':'none'}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>`; }
 const PLUS_SVG = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
@@ -284,9 +356,13 @@ function updateRow(it){
 }
 
 /* ============================================================
-   Pemutar — Archive via <audio>, YouTube via embed IFrame API
+   Pemutar — Archive & YouTube lewat elemen <audio> yang sama;
+   embed IFrame hanya fallback terakhir untuk satu trek YouTube
+   bila seluruh rantai aliran Piped gagal.
    ============================================================ */
 let ytPlayer = null, ytReady = false, ytWanted = null;
+let playToken = 0;
+let ytAttempt = null; // {token,item,order,pos,stream,stage,advancing}
 window.onYouTubeIframeAPIReady = () => { ytReady = true; if (ytWanted) ytLoad(ytWanted); };
 (function loadYT(){
   const tag = document.createElement('script');
@@ -313,7 +389,11 @@ function ytLoad(videoId){
     },
   });
 }
-function ytIsActive(){ return S.current && S.current.source === 'youtube'; }
+function ytEmbedActive(){ return !!S.current && S.current.source === 'youtube' && S.playMode === 'embed'; }
+function stopEmbed(){
+  els.ytMount.hidden = true;
+  if (ytPlayer && ytPlayer.pauseVideo) try { ytPlayer.pauseVideo(); } catch {}
+}
 function ytGetTime(){
   try { return ytPlayer && ytPlayer.getCurrentTime ? ytPlayer.getCurrentTime() : 0; } catch { return 0; }
 }
@@ -332,40 +412,181 @@ function pushHistory(it){
   S.history = [it, ...S.history.filter(h => keyOf(h) !== keyOf(it))].slice(0, 30);
   store.set('history', S.history); renderHistory();
 }
+function refreshPlaybackChrome(){
+  const it = S.current;
+  if (!it) return;
+  els.npSource.hidden = false;
+  let label = 'Archive · full';
+  if (it.source === 'youtube') {
+    label = S.playMode === 'embed' ? 'YouTube · embed'
+      : S.playMode === 'resolving' ? 'YouTube · audio …'
+      : 'YouTube · audio';
+  }
+  els.npSource.textContent = label;
+  els.npSource.className = 'src-badge ' + it.source + (S.playMode === 'embed' ? ' embed' : '');
+
+  if (it.source === 'youtube' && S.playMode === 'embed') {
+    els.vizNote.textContent = 'Semua aliran audio Piped gagal untuk trek ini — diputar lewat embed resmi YouTube. Iklan & perilaku latar mengikuti YouTube; visual reaktif semu.';
+    els.vizNote.hidden = false;
+  } else if (it.source === 'youtube' && S.playMode === 'audio-direct') {
+    els.vizNote.textContent = 'Aliran YouTube ini menolak tap analyser (CORS) — musik tetap diputar penuh, visualnya reaktif semu untuk trek ini.';
+    els.vizNote.hidden = false;
+  } else {
+    els.vizNote.hidden = true;
+  }
+  msSetMetadata(it);
+}
+function beginCurrent(it){
+  els.npTitle.textContent = it.title;
+  els.npArtist.textContent = it.artist || '';
+  if (it.thumb) { els.npThumb.src = it.thumb; els.npThumb.hidden = false; } else els.npThumb.hidden = true;
+  document.title = '▶ ' + it.title + ' — Musik Arkasha';
+  pushHistory(it);
+  refreshPlaybackChrome();
+  renderAll();
+}
+/* Probe CORS yang jujur: fetch mode cors HANYA berhasil dibuka browser
+   bila server mengizinkan origin ini. Range kecil + abort sesudah header
+   agar tidak mengunduh berkas utuh. Gagal probe != musik gagal: putar
+   langsung tanpa tap analyser. */
+async function probeCors(url){
+  const ctl = new AbortController();
+  const to = setTimeout(() => ctl.abort(), 6000);
+  try {
+    await fetch(url, {
+      mode: 'cors', credentials: 'omit', cache: 'no-store',
+      headers: { Range: 'bytes=0-0' }, signal: ctl.signal,
+    });
+    ctl.abort();
+    return true;
+  } catch { return false; }
+  finally { clearTimeout(to); }
+}
+async function startAudioPlayback(item, url, { tapped=true, attempt=null } = {}){
+  const target = selectAudio(tapped ? 'main' : 'direct');
+  const stage = tapped ? 'tapped' : 'direct';
+  S.playMode = tapped ? 'audio' : 'audio-direct';
+  item.embedFallback = false;
+  if (tapped) {
+    target.setAttribute('crossorigin', 'anonymous');
+    ensureAudioCtx();
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
+  } else {
+    target.removeAttribute('crossorigin');
+  }
+  target.src = url;
+  target.volume = Number($('#vol').value || 80) / 100;
+  refreshPlaybackChrome();
+  try {
+    await target.play();
+    return true;
+  } catch (e) {
+    if (attempt && S.current === item) {
+      // Abaikan penolakan basi dari elemen/stage yang sudah digantikan.
+      if (attempt.stage === stage && target === audio) void failYouTubeAttempt(e);
+    } else if (S.current === item) {
+      setStatus('Gagal memutar: ' + e.message, true);
+    }
+    return false;
+  }
+}
+async function playYouTubeAudio(item, token){
+  ytAttempt = {
+    token, item, order: pipedOrder(), pos: 0,
+    stream: null, stage: null, advancing: false, lastError: null,
+  };
+  await tryNextYouTubeInstance(token);
+}
+async function tryNextYouTubeInstance(token){
+  const att = ytAttempt;
+  if (!att || att.token !== token || att.token !== playToken || S.current !== att.item) return;
+  if (att.pos >= att.order.length) {
+    const item = att.item;
+    ytAttempt = null;
+    fallbackToEmbed(item);
+    return;
+  }
+  const base = att.order[att.pos++];
+  att.base = base; att.stream = null; att.stage = null; att.advancing = false;
+  S.playMode = 'resolving';
+  refreshPlaybackChrome();
+  setStatus('Mengambil aliran audio YouTube via ' + hostLabel(base) + '…');
+  let got;
+  try { got = await pipedStreams(base, att.item.videoId); }
+  catch (e) { att.lastError = e; return tryNextYouTubeInstance(token); }
+  if (!ytAttempt || ytAttempt !== att || token !== playToken || S.current !== att.item) return;
+  markPipedActive(base);
+  att.stream = got.stream;
+  att.item.streamUrl = got.stream.url;
+  att.item.streamMime = got.stream.mimeType || got.stream.format || '';
+  att.item.streamBitrate = got.stream.bitrate || null;
+  if (Number(got.data.duration) > 0) att.item.duration = Number(got.data.duration);
+  const tapped = await probeCors(got.stream.url);
+  if (!ytAttempt || ytAttempt !== att || token !== playToken || S.current !== att.item) return;
+  att.stage = tapped ? 'tapped' : 'direct';
+  await startAudioPlayback(att.item, got.stream.url, { tapped, attempt: att });
+}
+async function failYouTubeAttempt(reason){
+  const att = ytAttempt;
+  if (!att || att.advancing || S.current !== att.item) return;
+  att.advancing = true;
+  att.lastError = reason;
+  // Kegagalan pada jalur bertap analyser: coba URL yang sama tanpa tap
+  // dulu (kasus CORS) — jangan langsung mengorbankan trek/instance ini.
+  if (att.stream && att.stage === 'tapped') {
+    att.stage = 'direct';
+    att.advancing = false;
+    setStatus('Aliran menolak tap analyser (CORS) — tetap diputar tanpa tap…');
+    await startAudioPlayback(att.item, att.stream.url, { tapped: false, attempt: att });
+    return;
+  }
+  att.advancing = false;
+  await tryNextYouTubeInstance(att.token);
+}
+function fallbackToEmbed(item){
+  if (S.current !== item) return;
+  pauseAllAudio();
+  audio = audioMain;
+  S.playMode = 'embed';
+  item.embedFallback = true;
+  els.ytMount.hidden = false;
+  refreshPlaybackChrome();
+  renderAll();
+  setStatus('Semua aliran audio Piped gagal untuk trek ini — memakai embed resmi YouTube (iklan & latar mengikuti YouTube).', true);
+  ytLoad(item.videoId);
+}
 async function playQueueAt(idx){
   if (idx < 0 || idx >= S.queue.length) return;
   const it = S.queue[idx];
+  const token = ++playToken;
+  ytAttempt = null;
   S.idx = idx; S.current = it;
-  // siapkan sumber
+  it.embedFallback = false;
+  setPlaying(false);
+  stopEmbed();
+
   if (it.source === 'archive') {
-    els.ytMount.hidden = true;
-    if (ytPlayer && ytPlayer.pauseVideo) try { ytPlayer.pauseVideo(); } catch {}
-    setPlaying(false);
+    S.playMode = 'audio';
+    selectAudio('main');
+    beginCurrent(it);
     setStatus('Menyiapkan berkas Archive…');
     await iaResolve(it);
-    if (!it.playable) { setStatus('Item Archive ini tidak punya berkas audio yang bisa diputar.', true); return; }
-    ensureAudioCtx();
-    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(()=>{});
-    audio.src = it.streamUrl;
-    audio.play().catch(e => setStatus('Gagal memutar: ' + e.message, true));
+    if (token !== playToken || S.current !== it) return;
+    if (!it.playable) {
+      S.playMode = null;
+      setStatus('Item Archive ini tidak punya berkas audio yang bisa diputar.', true);
+      return;
+    }
+    await startAudioPlayback(it, it.streamUrl, { tapped: true });
   } else {
-    audio.pause(); audio.removeAttribute('src'); audio.load();
-    els.ytMount.hidden = false;
-    ytLoad(it.videoId);
-    setStatus('Memutar lewat embed resmi YouTube…');
+    // YouTube: hentikan audio lama, lalu rantai aliran Piped. Embed
+    // tidak ditampilkan sama sekali kecuali fallbackToEmbed() dipanggil.
+    pauseAllAudio();
+    audio = audioMain;
+    S.playMode = 'resolving';
+    beginCurrent(it);
+    await playYouTubeAudio(it, token);
   }
-  // info sedang diputar
-  els.npTitle.textContent = it.title;
-  els.npArtist.textContent = it.artist || '';
-  els.npSource.hidden = false;
-  els.npSource.textContent = it.source === 'archive' ? 'Archive · full' : 'YouTube';
-  els.npSource.className = 'src-badge ' + it.source;
-  if (it.thumb) { els.npThumb.src = it.thumb; els.npThumb.hidden = false; } else els.npThumb.hidden = true;
-  els.vizNote.hidden = it.source !== 'youtube';
-  msSetMetadata(it);
-  document.title = '▶ ' + it.title + ' — Musik Arkasha';
-  pushHistory(it);
-  renderQueue(); renderResults(); renderFavs(); renderHistory(); renderPlaylists();
 }
 function playList(items, idx){
   S.queue = items.slice();
@@ -374,11 +595,14 @@ function playList(items, idx){
 }
 function togglePlay(){
   if (!S.current) { if (S.queue.length) playQueueAt(0); return; }
-  if (ytIsActive()) {
+  if (ytEmbedActive()) {
     if (!ytPlayer) return;
     if (S.playing) ytPlayer.pauseVideo(); else ytPlayer.playVideo();
-  } else {
-    if (audio.paused) { ensureAudioCtx(); audio.play().catch(()=>{}); } else audio.pause();
+  } else if (audioBacked()) {
+    if (audio.paused) {
+      if (S.playMode === 'audio') ensureAudioCtx();
+      audio.play().catch(()=>{});
+    } else audio.pause();
   }
 }
 function next(auto=false){
@@ -396,35 +620,45 @@ function next(auto=false){
 function prev(){
   if (!S.queue.length) return;
   // bila sudah >3 detik, ulangi lagu daripada mundur
-  const t = ytIsActive() ? ytGetTime() : audio.currentTime;
+  const t = ytEmbedActive() ? ytGetTime() : audio.currentTime;
   if (t > 3) { seekTo(0); return; }
   playQueueAt((S.idx - 1 + S.queue.length) % S.queue.length);
 }
 function onEnded(){ next(true); }
 function seekTo(sec){
   if (!S.current) return;
-  if (ytIsActive()) { try { ytPlayer.seekTo(sec, true); } catch {} }
+  if (ytEmbedActive()) { try { ytPlayer.seekTo(sec, true); } catch {} }
   else if (isFinite(audio.duration)) audio.currentTime = sec;
 }
-function curTime(){ return ytIsActive() ? ytGetTime() : (audio.currentTime || 0); }
-function curDur(){ return ytIsActive() ? ytGetDur() : (isFinite(audio.duration) ? audio.duration : (S.current?.duration || 0)); }
+function curTime(){ return ytEmbedActive() ? ytGetTime() : (audio.currentTime || 0); }
+function curDur(){ return ytEmbedActive() ? ytGetDur() : (isFinite(audio.duration) ? audio.duration : (S.current?.duration || 0)); }
 
-/* audio element events */
-audio.addEventListener('play',  () => setPlaying(true));
-audio.addEventListener('pause', () => setPlaying(false));
-audio.addEventListener('ended', () => { setPlaying(false); onEnded(); });
+/* audio element events — diikat ke elemen utama maupun elemen
+   direct; hanya elemen yang sedang aktif yang boleh mengubah UI. */
 let failStreak = 0;
-audio.addEventListener('playing', () => { failStreak = 0; setStatus(''); });
-audio.addEventListener('error', () => {
-  if (S.current?.source !== 'archive') return;
-  failStreak++;
-  if (S.queue.length > 1 && failStreak <= S.queue.length && S.idx < S.queue.length - 1) {
-    setStatus('Berkas Archive ini tidak bisa diputar (mungkin dibatasi) — lanjut ke antrean berikutnya…', true);
-    setTimeout(() => playQueueAt(S.idx + 1), 350);
-  } else {
-    setStatus('Berkas audio gagal dimuat dari Archive (mungkin item dibatasi untuk anonim).', true);
-  }
-});
+function bindAudioEvents(el){
+  el.addEventListener('play',  () => { if (el === audio) setPlaying(true); });
+  el.addEventListener('pause', () => { if (el === audio) setPlaying(false); });
+  el.addEventListener('ended', () => { if (el === audio) { setPlaying(false); onEnded(); } });
+  el.addEventListener('playing', () => { if (el === audio) { failStreak = 0; setStatus(''); } });
+  el.addEventListener('error', () => {
+    if (el !== audio || !S.current) return;
+    if (S.current.source === 'youtube' && audioBacked() && ytAttempt) {
+      void failYouTubeAttempt(el.error || new Error('aliran audio gagal dimuat'));
+      return;
+    }
+    if (S.current.source !== 'archive') return;
+    failStreak++;
+    if (S.queue.length > 1 && failStreak <= S.queue.length && S.idx < S.queue.length - 1) {
+      setStatus('Berkas Archive ini tidak bisa diputar (mungkin dibatasi) — lanjut ke antrean berikutnya…', true);
+      setTimeout(() => playQueueAt(S.idx + 1), 350);
+    } else {
+      setStatus('Berkas audio gagal dimuat dari Archive (mungkin item dibatasi untuk anonim).', true);
+    }
+  });
+}
+bindAudioEvents(audioMain);
+bindAudioEvents(audioDirect);
 
 /* progress ticker */
 let seeking = false;
@@ -450,10 +684,10 @@ els.seek.addEventListener('change', () => {
 /* ============================================================
    Media Session API — putar latar + kontrol lock screen /
    notifikasi HP (mekanisme standar web). Metadata + handler di
-   sini berlaku untuk pemutar gabungan; untuk trek Archive yang
-   diputar lewat elemen <audio> inilah jalur putar latar yang
-   sesungguhnya. Trek YouTube tetap tunduk pada aturan embed
-   YouTube sendiri.
+   sini berlaku untuk pemutar gabungan. Trek Archive dan trek
+   YouTube yang berhasil masuk jalur aliran kini sama-sama lewat
+   elemen <audio>; hanya trek YouTube yang jatuh ke fallback
+   embed yang tetap tunduk pada aturan embed YouTube sendiri.
    ============================================================ */
 const hasMS = 'mediaSession' in navigator;
 function msSetMetadata(it){
@@ -462,7 +696,8 @@ function msSetMetadata(it){
     navigator.mediaSession.metadata = new MediaMetadata({
       title: it.title || 'Musik Arkasha',
       artist: it.artist || '',
-      album: it.source === 'archive' ? 'Internet Archive' : 'YouTube',
+      album: it.source === 'archive' ? 'Internet Archive'
+        : (S.playMode === 'embed' ? 'YouTube · embed fallback' : 'YouTube · audio Piped'),
       artwork: it.thumb ? [{ src: it.thumb, sizes: '512x512', type: 'image/jpeg' }] : [],
     });
   } catch {}
@@ -495,7 +730,7 @@ function msSetPosition(){
   set('nexttrack', () => next(false));
   set('seekto', e => {
     if (e.seekTime == null) return;
-    if (e.fastSeek && !ytIsActive()) { try { audio.fastSeek(e.seekTime); return; } catch {} }
+    if (e.fastSeek && audioBacked()) { try { audio.fastSeek(e.seekTime); return; } catch {} }
     seekTo(e.seekTime);
   });
   set('seekbackward', e => seekTo(Math.max(0, curTime() - (e.seekOffset || 10))));
@@ -520,10 +755,12 @@ $('#btnRepeat').addEventListener('click', e => {
 });
 $('#vol').addEventListener('input', e => {
   const v = e.target.value / 100;
-  audio.volume = v;
+  audioMain.volume = v;
+  audioDirect.volume = v;
   try { ytPlayer && ytPlayer.setVolume && ytPlayer.setVolume(e.target.value); } catch {}
 });
-audio.volume = 0.8;
+audioMain.volume = 0.8;
+audioDirect.volume = 0.8;
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' && !/INPUT|TEXTAREA/.test(document.activeElement?.tagName || '')) {
     e.preventDefault(); togglePlay();
@@ -531,7 +768,9 @@ document.addEventListener('keydown', e => {
 });
 
 /* ============================================================
-   Visualisasi — Web Audio API (Archive) + reaktif semu (YT)
+   Visualisasi — Web Audio API untuk audio yang berhasil ditap
+   (Archive + YouTube aliran CORS-lolos); reaktif semu hanya
+   untuk fallback embed / aliran tanpa tap analyser.
    ============================================================ */
 const canvas = $('#viz'), ctx2d = canvas.getContext('2d');
 let audioCtx = null, analyser = null, freqData = null, timeData = null;
@@ -541,7 +780,7 @@ function ensureAudioCtx(){
   if (audioCtx) return;
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const src = audioCtx.createMediaElementSource(audio);
+    const src = audioCtx.createMediaElementSource(audioMain);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 512;
     analyser.smoothingTimeConstant = 0.78;
@@ -559,7 +798,7 @@ function fitCanvas(){
 new ResizeObserver(fitCanvas).observe(canvas.parentElement);
 fitCanvas();
 
-/* data semu untuk YouTube: denyut mengikuti waktu putar */
+/* data semu untuk jalur tanpa tap: denyut mengikuti waktu putar */
 function pseudoFreq(out, t){
   const n = out.length;
   const beat = Math.pow(Math.max(0, Math.sin(t * 2.2)), 3) * 0.55 + 0.45;
@@ -573,13 +812,15 @@ function pseudoFreq(out, t){
   }
 }
 function currentFreq(target){
-  if (ytIsActive()) {
-    if (S.playing) pseudoFreq(target, ytGetTime() || performance.now() / 1000);
-    else target.fill(0);
+  if (analyser && audioTapActive()) {
+    analyser.getByteFrequencyData(target);
     return;
   }
-  if (analyser && S.current?.source === 'archive') analyser.getByteFrequencyData(target);
-  else target.fill(0);
+  if (S.playing && (ytEmbedActive() || S.playMode === 'audio-direct')) {
+    pseudoFreq(target, curTime() || performance.now() / 1000);
+    return;
+  }
+  target.fill(0);
 }
 const rawFreq = new Uint8Array(256);
 function drawViz(){
@@ -617,7 +858,7 @@ function drawViz(){
     }
   } else if (vizMode === 'wave') {
     let data = null;
-    if (analyser && S.current?.source === 'archive' && !ytIsActive()) {
+    if (analyser && audioTapActive()) {
       analyser.getByteTimeDomainData(timeData); data = timeData;
     }
     ctx2d.lineWidth = Math.max(2, H * 0.012);
@@ -786,15 +1027,20 @@ if (params.get('debug') === '1') {
   els.debug.hidden = false;
   setInterval(() => {
     let avg = 0;
-    if (freqData && analyser && S.current?.source === 'archive') {
+    if (freqData && analyser && audioTapActive()) {
       analyser.getByteFrequencyData(freqData);
       avg = Math.round(freqData.reduce((a, b) => a + b, 0) / freqData.length);
     }
     els.debug.textContent =
-      `src=${S.current?.source || '-'} state=${S.playing ? 'playing' : 'paused'} ` +
+      `src=${S.current?.source || '-'} mode=${S.playMode || '-'} tap=${audioTapActive() ? 1 : 0} state=${S.playing ? 'playing' : 'paused'} ` +
       `t=${curTime().toFixed(1)}/${curDur().toFixed(1)} freqAvg=${avg} queue=${S.queue.length} ` +
       `results=${S.results.length} piped=${S.pipedBase || '-'}`;
-    window.__MA_STATS = { src: S.current?.source, playing: S.playing, t: curTime(), freqAvg: avg, results: S.results.length };
+    window.__MA_STATS = {
+      src: S.current?.source, mode: S.playMode, tapped: audioTapActive(),
+      playing: S.playing, t: curTime(), freqAvg: avg, results: S.results.length,
+      streamMime: S.current?.streamMime || null, streamBitrate: S.current?.streamBitrate || null,
+      embedFallback: !!S.current?.embedFallback,
+    };
   }, 500);
 }
 

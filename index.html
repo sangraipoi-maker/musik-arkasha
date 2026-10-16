@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Musik Arkasha — Pemutar Musik Pribadi</title>
-<meta name="description" content="Website musik pribadi: cari & putar musik dari Internet Archive (full) dan YouTube (embed resmi), dengan visualisasi audio.">
+<meta name="description" content="Website musik pribadi: cari & putar musik dari Internet Archive dan YouTube sebagai aliran audio, dengan visualisasi audio.">
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
 </head>
@@ -17,7 +17,7 @@
     </div>
     <div class="brand-text">
       <strong>Musik Arkasha</strong>
-      <span>archive full · youtube embed · visual</span>
+      <span>archive full · youtube audio · visual</span>
     </div>
   </div>
 
@@ -55,14 +55,14 @@
           <button class="mode-btn" data-mode="radial">Radial</button>
         </div>
       </div>
-      <p id="vizNote" class="viz-note" hidden>Visual reaktif untuk YouTube (audio embed tidak bisa ditap) — versi penuh dari audio asli berlaku untuk trek Archive.</p>
+      <p id="vizNote" class="viz-note" hidden></p>
     </div>
 
     <div class="nowplaying">
       <img id="npThumb" class="np-thumb" alt="" hidden>
       <div class="np-meta">
         <h1 id="npTitle">Belum ada lagu diputar</h1>
-        <p id="npArtist">Cari lagu di atas, lalu klik untuk memutar. Trek Archive diputar penuh; YouTube lewat embed resmi.</p>
+        <p id="npArtist">Cari lagu di atas, lalu klik untuk memutar. Trek Archive dan YouTube diputar sebagai audio; embed resmi hanya cadangan terakhir.</p>
       </div>
       <span id="npSource" class="src-badge" hidden></span>
     </div>
@@ -142,7 +142,7 @@
 </main>
 
 <footer class="foot">
-  <span>Sumber: <strong>Internet Archive</strong> (streaming penuh, API resmi) · <strong>YouTube</strong> via pencarian Piped + embed resmi. Tanpa akun, tanpa server — favorit &amp; playlist tersimpan lokal.</span>
+  <span>Sumber: <strong>Internet Archive</strong> (streaming penuh, API resmi) · <strong>YouTube</strong> via pencarian + aliran audio Piped; embed resmi hanya bila semua aliran gagal. Tanpa akun, tanpa server — favorit &amp; playlist tersimpan lokal.</span>
   <span id="pipedStatus" class="piped-status"></span>
 </footer>
 
@@ -161,6 +161,9 @@
 </div>
 
 <audio id="audio" crossorigin="anonymous" preload="metadata"></audio>
+<!-- Cadangan khusus bila aliran tidak mengizinkan CORS untuk analyser:
+     musik tetap diputar langsung tanpa tap visualizer. -->
+<audio id="audioDirect" preload="metadata" hidden></audio>
 <script src="app.js"></script>
 </body>
 </html>
