@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Musik Arkasha — Pemutar Musik Pribadi</title>
+<meta name="description" content="Website musik pribadi: cari & putar musik dari Internet Archive (full) dan YouTube (embed resmi), dengan visualisasi audio.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    </div>
+    <div class="brand-text">
+      <strong>Musik Arkasha</strong>
+      <span>archive full · youtube embed · visual</span>
+    </div>
+  </div>
+
+  <form id="searchForm" class="searchbar" role="search">
+    <label class="sr-only" for="searchInput">Cari lagu atau artis</label>
+    <svg class="search-ic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    <input id="searchInput" type="search" placeholder="Cari lagu / artis… mis. beethoven, adele, dewa" autocomplete="off" enterkeyhint="search">
+    <button type="submit" class="btn btn-accent">Cari</button>
+  </form>
+
+  <div class="source-chips" role="group" aria-label="Filter sumber">
+    <button class="chip is-active" data-filter="all">Semua</button>
+    <button class="chip" data-filter="archive">Archive · full</button>
+    <button class="chip" data-filter="youtube">YouTube</button>
+  </div>
+</header>
+
+<div id="debugbar" hidden></div>
+
+<main class="layout">
+
+  <!-- ============ PANGGUNG / PEMUTAR ============ -->
+  <section class="stage card" aria-label="Pemutar">
+    <div class="viz-wrap">
+      <canvas id="viz" aria-label="Visualisasi audio"></canvas>
+      <div id="ytMount" class="yt-mount" hidden>
+        <div id="ytPlayer"></div>
+        <div class="yt-shield" title="Video YouTube diputar lewat embed resmi"></div>
+      </div>
+      <div class="viz-topbar">
+        <span id="liveBadge" class="live-badge" hidden>● MEMUTAR</span>
+        <div class="viz-modes" role="group" aria-label="Mode visualisasi">
+          <button class="mode-btn is-active" data-mode="bars">Batang</button>
+          <button class="mode-btn" data-mode="wave">Gelombang</button>
+          <button class="mode-btn" data-mode="radial">Radial</button>
+        </div>
+      </div>
+      <p id="vizNote" class="viz-note" hidden>Visual reaktif untuk YouTube (audio embed tidak bisa ditap) — versi penuh dari audio asli berlaku untuk trek Archive.</p>
+    </div>
+
+    <div class="nowplaying">
+      <img id="npThumb" class="np-thumb" alt="" hidden>
+      <div class="np-meta">
+        <h1 id="npTitle">Belum ada lagu diputar</h1>
+        <p id="npArtist">Cari lagu di atas, lalu klik untuk memutar. Trek Archive diputar penuh; YouTube lewat embed resmi.</p>
+      </div>
+      <span id="npSource" class="src-badge" hidden></span>
+    </div>
+
+    <div class="seekrow">
+      <span id="tCur" class="time">0:00</span>
+      <input id="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Geser posisi putar">
+      <span id="tDur" class="time">0:00</span>
+    </div>
+
+    <div class="controls">
+      <button id="btnShuffle" class="ctl ctl-ghost" aria-label="Acak" title="Acak">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/></svg>
+      </button>
+      <button id="btnPrev" class="ctl" aria-label="Sebelumnya" title="Sebelumnya">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M19 20 9 12l10-8v16z"/><path d="M7 5H5v14h2z"/></svg>
+      </button>
+      <button id="btnPlay" class="ctl ctl-main" aria-label="Putar / jeda" title="Putar / jeda">
+        <svg id="icPlay" viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M8 5.5v13l11-6.5-11-6.5z"/></svg>
+        <svg id="icPause" viewBox="0 0 24 24" width="26" height="26" fill="currentColor" hidden><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>
+      </button>
+      <button id="btnNext" class="ctl" aria-label="Berikutnya" title="Berikutnya">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="m5 4 10 8-10 8V4z"/><path d="M17 5h2v14h-2z"/></svg>
+      </button>
+      <button id="btnRepeat" class="ctl ctl-ghost" aria-label="Ulangi" title="Ulangi: mati">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
+        <span id="repeatTag" class="repeat-tag" hidden>1</span>
+      </button>
+      <div class="vol">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+        <input id="vol" type="range" min="0" max="100" value="80" aria-label="Volume">
+      </div>
+    </div>
+    <p id="status" class="status" role="status"></p>
+  </section>
+
+  <!-- ============ DAFTAR ============ -->
+  <section class="lists card" aria-label="Daftar lagu">
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="results" role="tab">Hasil</button>
+      <button class="tab" data-tab="queue" role="tab">Antrean <span id="queueCount" class="count"></span></button>
+      <button class="tab" data-tab="favs" role="tab">Favorit</button>
+      <button class="tab" data-tab="playlists" role="tab">Playlist</button>
+      <button class="tab" data-tab="history" role="tab">Riwayat</button>
+    </nav>
+
+    <div id="panel-results" class="panel">
+      <div id="resultsMeta" class="panel-meta">Belum ada pencarian. Coba “beethoven” untuk Archive, atau nama lagu populer untuk YouTube.</div>
+      <ul id="resultsList" class="tracklist"></ul>
+    </div>
+
+    <div id="panel-queue" class="panel" hidden>
+      <div class="panel-meta">Klik lagu di Hasil untuk menjadikan daftar itu antrean. Tombol ＋ menambahkan satu lagu ke antrean.</div>
+      <ul id="queueList" class="tracklist"></ul>
+    </div>
+
+    <div id="panel-favs" class="panel" hidden>
+      <div class="panel-meta">Favorit tersimpan lokal di browser ini (localStorage).</div>
+      <ul id="favList" class="tracklist"></ul>
+    </div>
+
+    <div id="panel-playlists" class="panel" hidden>
+      <div class="playlist-head">
+        <input id="newPlaylistName" type="text" placeholder="Nama playlist baru…" maxlength="60">
+        <button id="btnNewPlaylist" class="btn">Buat</button>
+      </div>
+      <div id="playlistWrap"></div>
+    </div>
+
+    <div id="panel-history" class="panel" hidden>
+      <div class="panel-meta">Terakhir diputar di browser ini.
+        <button id="btnClearHistory" class="btn btn-mini">Bersihkan</button>
+      </div>
+      <ul id="historyList" class="tracklist"></ul>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>Sumber: <strong>Internet Archive</strong> (streaming penuh, API resmi) · <strong>YouTube</strong> via pencarian Piped + embed resmi. Tanpa akun, tanpa server — favorit &amp; playlist tersimpan lokal.</span>
+  <span id="pipedStatus" class="piped-status"></span>
+</footer>
+
+<!-- Modal tambah ke playlist -->
+<div id="plModal" class="modal" hidden>
+  <div class="modal-card">
+    <h2>Tambah ke playlist</h2>
+    <p id="plModalTitle" class="modal-song"></p>
+    <div id="plModalList" class="modal-list"></div>
+    <div class="modal-new">
+      <input id="plModalNew" type="text" placeholder="atau buat baru…" maxlength="60">
+      <button id="plModalCreate" class="btn btn-accent">Buat &amp; tambah</button>
+    </div>
+    <button id="plModalClose" class="btn btn-block">Tutup</button>
+  </div>
+</div>
+
+<audio id="audio" crossorigin="anonymous" preload="metadata"></audio>
+<script src="app.js"></script>
+</body>
+</html>
