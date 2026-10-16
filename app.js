@@ -326,6 +326,7 @@ function setPlaying(on){
   els.icPlay.hidden = on; els.icPause.hidden = !on;
   els.liveBadge.hidden = !on;
   $$('.track.is-current').forEach(li => li.classList.toggle('is-playing', on));
+  msSyncState();
 }
 function pushHistory(it){
   S.history = [it, ...S.history.filter(h => keyOf(h) !== keyOf(it))].slice(0, 30);
@@ -361,6 +362,7 @@ async function playQueueAt(idx){
   els.npSource.className = 'src-badge ' + it.source;
   if (it.thumb) { els.npThumb.src = it.thumb; els.npThumb.hidden = false; } else els.npThumb.hidden = true;
   els.vizNote.hidden = it.source !== 'youtube';
+  msSetMetadata(it);
   document.title = '▶ ' + it.title + ' — Musik Arkasha';
   pushHistory(it);
   renderQueue(); renderResults(); renderFavs(); renderHistory(); renderPlaylists();
@@ -432,6 +434,7 @@ setInterval(() => {
   if (!seeking) els.seek.value = d > 0 ? Math.round(t / d * 1000) : 0;
   els.tCur.textContent = fmt(t);
   els.tDur.textContent = fmt(d || S.current.duration || 0);
+  msSetPosition();
 }, 400);
 els.seek.addEventListener('input', () => {
   seeking = true;
@@ -443,6 +446,61 @@ els.seek.addEventListener('change', () => {
   if (d > 0) seekTo(els.seek.value / 1000 * d);
   seeking = false;
 });
+
+/* ============================================================
+   Media Session API — putar latar + kontrol lock screen /
+   notifikasi HP (mekanisme standar web). Metadata + handler di
+   sini berlaku untuk pemutar gabungan; untuk trek Archive yang
+   diputar lewat elemen <audio> inilah jalur putar latar yang
+   sesungguhnya. Trek YouTube tetap tunduk pada aturan embed
+   YouTube sendiri.
+   ============================================================ */
+const hasMS = 'mediaSession' in navigator;
+function msSetMetadata(it){
+  if (!hasMS || !it) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: it.title || 'Musik Arkasha',
+      artist: it.artist || '',
+      album: it.source === 'archive' ? 'Internet Archive' : 'YouTube',
+      artwork: it.thumb ? [{ src: it.thumb, sizes: '512x512', type: 'image/jpeg' }] : [],
+    });
+  } catch {}
+}
+function msSyncState(){
+  if (!hasMS) return;
+  try {
+    navigator.mediaSession.playbackState =
+      S.playing ? 'playing' : (S.current ? 'paused' : 'none');
+  } catch {}
+}
+function msSetPosition(){
+  if (!hasMS || typeof navigator.mediaSession.setPositionState !== 'function') return;
+  const d = curDur(), t = curTime();
+  if (!(d > 0) || !isFinite(d) || !isFinite(t)) return;
+  try {
+    navigator.mediaSession.setPositionState({
+      duration: d,
+      playbackRate: 1,
+      position: Math.min(Math.max(0, t), d),
+    });
+  } catch {}
+}
+(function msSetHandlers(){
+  if (!hasMS) return;
+  const set = (action, fn) => { try { navigator.mediaSession.setActionHandler(action, fn); } catch {} };
+  set('play',  () => togglePlay());
+  set('pause', () => togglePlay());
+  set('previoustrack', () => prev());
+  set('nexttrack', () => next(false));
+  set('seekto', e => {
+    if (e.seekTime == null) return;
+    if (e.fastSeek && !ytIsActive()) { try { audio.fastSeek(e.seekTime); return; } catch {} }
+    seekTo(e.seekTime);
+  });
+  set('seekbackward', e => seekTo(Math.max(0, curTime() - (e.seekOffset || 10))));
+  set('seekforward',  e => seekTo(curTime() + (e.seekOffset || 10)));
+})();
 
 /* controls */
 $('#btnPlay').addEventListener('click', togglePlay);

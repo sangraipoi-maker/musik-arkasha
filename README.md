@@ -6,10 +6,14 @@ Statis penuh (HTML/CSS/JS vanilla, tanpa build step), tanpa akun, tanpa
 server data — favorit, playlist, dan riwayat tersimpan di `localStorage`
 browser.
 
+**Versi tayang: v1.1** (17 Okt 2026) — Media Session API: putar latar untuk
+trek Archive + kontrol lock screen/notifikasi HP.
+(v1.0 = tayang perdana GitHub Pages, 17 Okt 2026.)
+
 ## Cara menjalankan
 
 ```bash
-cd ~/workspace/situs-musik
+cd ~/workspace/musik-arkasha-web
 python3 -m http.server 8766
 # buka http://localhost:8766
 ```
@@ -35,6 +39,12 @@ Hasil kedua sumber digabung dalam satu daftar, tiap baris berlabel sumbernya
   shuffle, repeat mati/semua/satu.
 - **Visualisasi** (Web Audio API `AnalyserNode` → canvas, 60fps):
   3 mode — **Batang** spektrum, **Gelombang**, **Radial**.
+- **Putar latar & kontrol sistem (Media Session API):** metadata trek
+  (judul, penyanyi, sumber sebagai album, gambar sampul), handler
+  play/pause/prev/next/seek yang terhubung ke kontrol pemutar yang sama,
+  `playbackState`, dan `setPositionState` dilaporkan ke OS — untuk trek
+  Archive yang diputar lewat elemen `<audio>`, putar berlanjut di latar
+  dan bisa dikendalikan dari lock screen/notifikasi HP.
 - **Favorit & Playlist** lokal (buat/hapus playlist, tambah lagu via modal),
   **Riwayat** 30 putaran terakhir.
 
@@ -59,6 +69,13 @@ Hasil kedua sumber digabung dalam satu daftar, tiap baris berlabel sumbernya
 5. Kualitas/judul dari Archive mengikuti metadata komunitasnya (kadang
    item berisi banyak trek; yang dipilih adalah berkas audio terbaik
    menurut metadata — judul trek diambil dari metadata berkas bila ada).
+6. **Putar latar & iklan YouTube bukan ranah situs ini.** Trek YouTube
+   diputar lewat embed resmi di dalam iframe YouTube: iklan berasal dari
+   YouTube, dan perilaku latarnya ditentukan YouTube/OS — tidak bisa
+   diubah dari kode situs tanpa meninggalkan cara embed resmi. Yang
+   dijamin situs: trek **Archive** memakai jalur audio asli + Media
+   Session (mekanisme standar putar latar web); perilaku akhir
+   (mis. hemat baterai agresif dari OS HP) tetap di tangan OS.
 
 ## Verifikasi (17 Okt 2026, oleh Damar🦫)
 
